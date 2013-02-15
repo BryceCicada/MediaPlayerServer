@@ -3,6 +3,7 @@ package com.we7.player.mediaplayerserver;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -52,6 +53,33 @@ public class MainService extends IntentService {
     protected static final String SERVER_URL = INTENT_STRING_PREFIX + "." + TAG + ".extra.SERVER_URL";
   }
 
+  private static enum HttpMethod {
+    HEAD("HEAD"),
+    GET("GET"),
+    UNDEFINED("UNDEFINED");
+
+    private String mMethodString;
+
+    HttpMethod(final String methodString) {
+      mMethodString = methodString;
+    }
+
+    public String getMethodString() {
+      return mMethodString;
+    }
+
+    public static HttpMethod getByMethodString(final String s) {
+      HttpMethod r = UNDEFINED;
+      for (HttpMethod m : HttpMethod.values()) {
+        if (m.getMethodString().equals(s)) {
+          r = m;
+          break;
+        }
+      }
+      return r;
+    }
+  }
+
   public MainService() {
     super(MainService.class.getSimpleName());
   }
@@ -86,8 +114,13 @@ public class MainService extends IntentService {
 
     int port = 1024 + r.nextInt(100);
 
+    Socket conn = null;
+    OutputStream out = null;
+    BufferedWriter bw = null;
+    ServerSocket serverSocket = null;
+
     try {
-      ServerSocket serverSocket = new ServerSocket( port );
+      serverSocket = new ServerSocket( port );
 
       InetAddress ia = getIPv4Address(getNetworkInterface());
       if (ia != null) {
@@ -98,11 +131,13 @@ public class MainService extends IntentService {
         b.putString(Extras.SERVER_URL, u);
         sendBroadcast(Action.EVENT, Category.STARTED, b);
 
-        Socket conn = serverSocket.accept();
+        conn = serverSocket.accept();
 
         Log.d(TAG, "Connection from " + conn.getInetAddress());
 
         BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+
+        HttpMethod method = null;
 
         while (true) {
           String s = br.readLine();
@@ -110,34 +145,84 @@ public class MainService extends IntentService {
             break;
           } else {
             Log.d(TAG, s);
+            if (method == null) {
+              String[] tokens = s.split(" ");
+              if (tokens.length > 0) {
+                method = HttpMethod.getByMethodString(tokens[0]);
+              } else {
+                method = HttpMethod.UNDEFINED;
+              }
+            }
           }
         }
 
-        OutputStream out = new BufferedOutputStream(conn.getOutputStream());
+        if (method == HttpMethod.GET || method == HttpMethod.HEAD) {
+          out = new BufferedOutputStream(conn.getOutputStream());
 
-        BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(out));
-        bw.write("HTTP/1.1 200 OK" + CRLF);
-        bw.write(("Date: " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ").format(new Date())) + CRLF);
-        bw.write("Server: My Dicky Server" + CRLF);
-        bw.write("Last-Modified: 23 Nov 2011 16:50:22 GMT" + CRLF);
-        bw.write("Content-Length: 2461361" + CRLF);
-        bw.write("Content-Type: audio/mpeg" + CRLF);
-        bw.write(CRLF);
-        bw.flush();
+          bw = new BufferedWriter(new OutputStreamWriter(out));
+          bw.write("HTTP/1.1 200 OK" + CRLF);
+          bw.write(("Date: " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ").format(new Date())) + CRLF);
+          bw.write("Server: My Dicky Server" + CRLF);
+          bw.write("Last-Modified: 23 Nov 2011 16:50:22 GMT" + CRLF);
+          bw.write("Content-Length: 2461361" + CRLF);
+          bw.write("Content-Type: audio/mpeg" + CRLF);
+          bw.write(CRLF);
+          bw.flush();
 
-        Resources resources = getResources();
-        int id = resources.getIdentifier(MainService.class.getPackage().getName() + ":raw/test", null, null);
-        InputStream rin = resources.openRawResource(id);
-        IOUtils.copy(rin, out);
+          if (method == HttpMethod.GET) {
+            Resources resources = getResources();
+            int id = resources.getIdentifier(MainService.class.getPackage().getName() + ":raw/test", null, null);
+            InputStream rin = resources.openRawResource(id);
+            IOUtils.copy(rin, out);
+          }
+        }
+
+
       }
 
     } catch (IOException e) {
       Log.d(TAG, "", e);
-      stop();
+      //stop();
+    } finally {
+      close(serverSocket);
+      close(conn);
+      close(out);
+      close(bw);
     }
+    stop();
 
 
     Log.d(TAG, "start <<<");
+  }
+
+  private void close(final Socket c) {
+    if (c != null) {
+      try {
+        c.close();
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+    }
+  }
+
+  private void close(final ServerSocket c) {
+    if (c != null) {
+      try {
+        c.close();
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+    }
+  }
+
+  private void close(final Closeable c) {
+    if (c != null) {
+      try {
+        c.close();
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+    }
   }
 
   private InetAddress getIPv4Address(final NetworkInterface ni) {
