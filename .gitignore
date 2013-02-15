@@ -1,0 +1,8 @@
+.checkstyle
+/gen
+/bin
+/tmp
+/test/gen
+/test/bin
+/local.properties
+/test/local.properties
