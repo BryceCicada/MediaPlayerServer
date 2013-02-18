@@ -47,10 +47,14 @@ public class MainService extends IntentService {
 
     public static final String STARTED = INTENT_STRING_PREFIX + "." + TAG + ".category.STARTED";
     public static final String STOPPED = INTENT_STRING_PREFIX + "." + TAG + ".category.STOPPED";
+    public static final String CONNECTED = INTENT_STRING_PREFIX + "." + TAG + ".category.CONNECTED";;
+    public static final String REQUEST = INTENT_STRING_PREFIX + "." + TAG + ".category.REQUEST";;
   }
 
   public static final class Extras {
-    protected static final String SERVER_URL = INTENT_STRING_PREFIX + "." + TAG + ".extra.SERVER_URL";
+    public static final String SERVER_URL = INTENT_STRING_PREFIX + "." + TAG + ".extra.SERVER_URL";
+    public static final String CONNECTION_URL = INTENT_STRING_PREFIX + "." + TAG + ".extra.CONNECTION_URL";
+    public static final String REQUEST_TYPE = INTENT_STRING_PREFIX + "." + TAG + ".extra.REQUEST_TYPE";
   }
 
   private static enum HttpMethod {
@@ -114,9 +118,6 @@ public class MainService extends IntentService {
 
     int port = 1024 + r.nextInt(100);
 
-    Socket conn = null;
-    OutputStream out = null;
-    BufferedWriter bw = null;
     ServerSocket serverSocket = null;
 
     try {
@@ -125,72 +126,15 @@ public class MainService extends IntentService {
       InetAddress ia = getIPv4Address(getNetworkInterface());
       if (ia != null) {
 
-        String u = "http://" + ia.toString().substring(1) + ":" + serverSocket.getLocalPort() + "/foo";
-        Log.d(TAG, "ServerSocket created at " + u);
-        Bundle b = new Bundle();
-        b.putString(Extras.SERVER_URL, u);
-        sendBroadcast(Action.EVENT, Category.STARTED, b);
+        String socketAddress = "http://" + ia.toString().substring(1) + ":" + serverSocket.getLocalPort() + "/foo";
+        Log.d(TAG, "ServerSocket created at " + socketAddress);
 
-        conn = serverSocket.accept();
-
-        Log.d(TAG, "Connection from " + conn.getInetAddress());
-
-        BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-
-        HttpMethod method = null;
-
-        while (true) {
-          String s = br.readLine();
-          if ("".equals(s)) {
-            break;
-          } else {
-            Log.d(TAG, s);
-            if (method == null) {
-              String[] tokens = s.split(" ");
-              if (tokens.length > 0) {
-                method = HttpMethod.getByMethodString(tokens[0]);
-              } else {
-                method = HttpMethod.UNDEFINED;
-              }
-            }
-          }
-        }
-
-        if (method == HttpMethod.GET || method == HttpMethod.HEAD) {
-          out = new BufferedOutputStream(conn.getOutputStream());
-
-          bw = new BufferedWriter(new OutputStreamWriter(out));
-          bw.write("HTTP/1.1 200 OK" + CRLF);
-          bw.write(("Date: " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ").format(new Date())) + CRLF);
-          bw.write("Server: My Dicky Server" + CRLF);
-          bw.write("Last-Modified: 23 Nov 2011 16:50:22 GMT" + CRLF);
-          bw.write("Content-Length: 2461361" + CRLF);
-          bw.write("Content-Type: audio/mpeg" + CRLF);
-          bw.write(CRLF);
-          bw.flush();
-
-          if (method == HttpMethod.GET) {
-            Resources resources = getResources();
-            int id = resources.getIdentifier(MainService.class.getPackage().getName() + ":raw/test", null, null);
-            InputStream rin = resources.openRawResource(id);
-            IOUtils.copy(rin, out);
-          }
-        }
-
-
+        new SocketHandlerThread(serverSocket, socketAddress).start();
       }
-
     } catch (IOException e) {
       Log.d(TAG, "", e);
-      //stop();
     } finally {
-      close(serverSocket);
-      close(conn);
-      close(out);
-      close(bw);
     }
-    stop();
-
 
     Log.d(TAG, "start <<<");
   }
@@ -244,7 +188,7 @@ public class MainService extends IntentService {
     Enumeration<NetworkInterface> e = NetworkInterface.getNetworkInterfaces();
     while (e.hasMoreElements()) {
       NetworkInterface i = e.nextElement();
-      if (i.getName().startsWith("wlan")) {
+      if (i.getName().startsWith("wlan") || i.getName().startsWith("eth")) {
         r = i;
         break;
       }
@@ -273,4 +217,135 @@ public class MainService extends IntentService {
     Log.d(TAG, "Broadcasting " + i);
     LocalBroadcastManager.getInstance(this).sendBroadcast(i);
   }
+
+
+  private class ConnectionHandlerThread extends Thread {
+    private final ServerSocket mServerSocket;
+    private final Socket mSocket;
+
+    public ConnectionHandlerThread(final ServerSocket serverSocket, final Socket socket) {
+      this.mServerSocket = serverSocket;
+      this.mSocket = socket;
+    }
+
+    @Override
+    public void run() {
+      OutputStream out = null;
+      BufferedWriter bw = null;
+
+      while (!mSocket.isClosed()) {
+        try {
+          BufferedReader br = new BufferedReader(new InputStreamReader(mSocket.getInputStream()));
+
+          HttpMethod method = null;
+          boolean rangeRequest = false;
+
+          int rangeFrom = 0;
+          int rangeTo = 2461360;
+
+          while (true) {
+            String s = br.readLine();
+            if ("".equals(s)) {
+              break;
+            } else {
+              Log.d(TAG, s);
+              if (method == null) {
+                String[] tokens = s.split(" ");
+                if (tokens.length > 0) {
+                  method = HttpMethod.getByMethodString(tokens[0]);
+                } else {
+                  method = HttpMethod.UNDEFINED;
+                }
+              }
+
+              if (s.startsWith("Range:")) {
+                rangeRequest = true;
+                String[] fromAndTo = s.split("=")[1].split("-");
+                rangeFrom = Integer.valueOf(fromAndTo[0]);
+                if (fromAndTo.length > 1) {
+                  rangeTo = Integer.valueOf(fromAndTo[1]);
+                }
+              }
+
+            }
+          }
+
+          Bundle b = new Bundle();
+          b.putSerializable(Extras.REQUEST_TYPE, method);
+          sendBroadcast(Action.EVENT, Category.REQUEST, b);
+
+          if (method == HttpMethod.GET || method == HttpMethod.HEAD) {
+
+            out = new BufferedOutputStream(mSocket.getOutputStream());
+            bw = new BufferedWriter(new OutputStreamWriter(out));
+
+            bw.write("HTTP/1.1 " + (rangeRequest?"206 Partial Content":"200 OK") + CRLF);
+            bw.write(("Date: " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ").format(new Date())) + CRLF);
+            bw.write("Server: My Dicky Server" + CRLF);
+            bw.write("Last-Modified: 23 Nov 2011 16:50:22 GMT" + CRLF);
+            bw.write("Content-Length: " + (rangeTo - rangeFrom + 1) + CRLF);
+            bw.write("Content-Type: audio/mpeg" + CRLF);
+            bw.write("Accept-Ranges: bytes" + CRLF);
+            if (rangeRequest) {
+              bw.write("Content-Range: bytes " + rangeFrom + "-" + rangeTo + "/2461361" + CRLF);
+            }
+
+            bw.write(CRLF);
+            bw.flush();
+
+            if (method == HttpMethod.GET) {
+              Resources resources = getResources();
+              int id = resources.getIdentifier(MainService.class.getPackage().getName() + ":raw/test", null, null);
+              InputStream rin = resources.openRawResource(id);
+              rin.skip(rangeFrom);
+              IOUtils.copy(rin, out);
+            }
+          }
+
+        } catch (IOException e) {
+          Log.d(TAG, "", e);
+          close(mSocket);
+          break;
+        } finally {
+          close(out);
+          close(bw);
+        }
+
+      }
+      sendBroadcast(Action.EVENT, Category.STOPPED);
+    }
+  }
+
+
+  private class SocketHandlerThread extends Thread {
+    private final ServerSocket mServerSocket;
+    private final String mAddress;
+
+    public SocketHandlerThread(final ServerSocket serverSocket, final String address) {
+      this.mServerSocket = serverSocket;
+      this.mAddress = address;
+    }
+
+    @Override
+    public void run() {
+      Bundle b = new Bundle();
+      b.putString(Extras.SERVER_URL, mAddress);
+      sendBroadcast(Action.EVENT, Category.STARTED, b);
+
+      try {
+        while (true) {
+          Socket socket = mServerSocket.accept();
+
+          b = new Bundle();
+          b.putString(Extras.CONNECTION_URL, socket.getInetAddress().toString());
+          sendBroadcast(Action.EVENT, Category.CONNECTED, b);
+
+          new ConnectionHandlerThread(mServerSocket, socket).start();
+        }
+      } catch (IOException e) {
+        e.printStackTrace();
+      }
+    }
+  }
+
 }
