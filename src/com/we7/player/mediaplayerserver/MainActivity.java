@@ -94,7 +94,7 @@ public class MainActivity extends Activity implements OnClickListener {
       findViewById(R.id.start).setEnabled(false);
 
       TextView tv = (TextView) findViewById(R.id.text);
-      tv.setText(intent.getExtras().getString(Extras.SERVER_URL, ""));
+      tv.setText(intent.getExtras().getString(Extras.SERVER_URL));
     }
 
   };
