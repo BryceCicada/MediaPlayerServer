@@ -21,15 +21,18 @@ import java.util.Random;
 
 import org.apache.commons.io.IOUtils;
 
-import android.app.IntentService;
+import android.app.PendingIntent;
+import android.app.Service;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.IBinder;
+import android.support.v4.app.NotificationCompat;
 import android.support.v4.content.LocalBroadcastManager;
 import android.util.Log;
 
-public class MainService extends IntentService {
+public class MainService extends Service {
 
   private static final String TAG = MainService.class.getSimpleName();
 
@@ -62,7 +65,7 @@ public class MainService extends IntentService {
     GET("GET"),
     UNDEFINED("UNDEFINED");
 
-    private String mMethodString;
+    private final String mMethodString;
 
     HttpMethod(final String methodString) {
       mMethodString = methodString;
@@ -84,15 +87,17 @@ public class MainService extends IntentService {
     }
   }
 
-  public MainService() {
-    super(MainService.class.getSimpleName());
-  }
-
   @Override
-  protected void onHandleIntent(final Intent intent) {
+  public int onStartCommand(final Intent intent, final int flags, final int startId) {
+    Log.i("LocalService", "Received start id " + startId + ": " + intent);
+
     if (Action.CONTROL.equals(intent.getAction())) {
       control(intent);
     }
+
+    // We want this service to continue running until it is explicitly
+    // stopped, so return sticky.
+    return START_STICKY;
   }
 
   private void control(final Intent intent) {
@@ -129,7 +134,24 @@ public class MainService extends IntentService {
         String socketAddress = "http://" + ia.toString().substring(1) + ":" + serverSocket.getLocalPort() + "/foo";
         Log.d(TAG, "ServerSocket created at " + socketAddress);
 
+        final Intent i = new Intent(this, MainActivity.class);
+        // Needs to be single top so that we only get one instance of Main
+        intent.setFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent contentIntent = PendingIntent.getActivity(this, 0, i, 0);
+
+        final NotificationCompat.Builder nb = new NotificationCompat.Builder(this);
+        nb.setContentTitle("MediaPlayerServer Running");
+        nb.setContentText(socketAddress);
+        nb.setWhen(System.currentTimeMillis());
+        nb.setContentIntent(contentIntent);
+        nb.setOngoing(true);
+        nb.setTicker(socketAddress);
+
+        Log.d(TAG, "Setting service to foreground state");
+        startForeground(1, nb.build());
+
         new SocketHandlerThread(serverSocket, socketAddress).start();
+
       }
     } catch (IOException e) {
       Log.d(TAG, "", e);
@@ -137,6 +159,20 @@ public class MainService extends IntentService {
     }
 
     Log.d(TAG, "start <<<");
+  }
+
+  @Override
+  public void onDestroy() {
+    Log.d(TAG, "onDestroy >>>");
+    super.onDestroy();
+    Log.d(TAG, "onDestroy <<<");
+  }
+
+  @Override
+  public void onCreate() {
+    Log.d(TAG, "onCreate >>>");
+    super.onCreate();
+    Log.d(TAG, "onCreate <<<");
   }
 
   private void close(final Socket c) {
@@ -230,6 +266,7 @@ public class MainService extends IntentService {
 
     @Override
     public void run() {
+
       OutputStream out = null;
       BufferedWriter bw = null;
 
@@ -280,7 +317,7 @@ public class MainService extends IntentService {
             bw = new BufferedWriter(new OutputStreamWriter(out));
 
             bw.write("HTTP/1.1 " + (rangeRequest?"206 Partial Content":"200 OK") + CRLF);
-            bw.write(("Date: " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ").format(new Date())) + CRLF);
+            bw.write(("Date: " + new SimpleDateFormat("EEE, dd MMM yyyyy HH:mm:ss z").format(new Date())) + CRLF);
             bw.write("Server: My Dicky Server" + CRLF);
             bw.write("Last-Modified: 23 Nov 2011 16:50:22 GMT" + CRLF);
             bw.write("Content-Length: " + (rangeTo - rangeFrom + 1) + CRLF);
@@ -346,6 +383,12 @@ public class MainService extends IntentService {
         e.printStackTrace();
       }
     }
+  }
+
+
+  @Override
+  public IBinder onBind(final Intent intent) {
+    return null;
   }
 
 }
